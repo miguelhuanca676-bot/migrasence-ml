@@ -1,6 +1,9 @@
-pandas
-scikit-learn
-joblib
-mysql-connector-python
-fastapi
-uvicorn
+# Versiones FIJAS: el modelo guardado solo se puede abrir con la misma versión de scikit-learn
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.1
+scikit-learn==1.9.1
+pandas==3.0.6
+numpy==2.5.4
+scipy==1.18.1
+joblib==1.6.0

@@ -1,20 +1,22 @@
-# 1. Usamos una versión ligera y oficial de Python 3.11
-FROM python:3.11-slim
+# MigraSense ML · imagen para Render
+FROM python:3.12-slim
 
-# 2. Establecemos la carpeta de trabajo dentro del servidor
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-# 3. Copiamos el archivo de requisitos al servidor
 COPY requirements.txt .
-
-# 4. Instalamos todas las librerías sin almacenar caché para ahorrar espacio
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copiamos todo el código de nuestra carpeta local al servidor
-COPY . .
+COPY conocimiento.py caracteristicas.py simulador.py entrenar.py main.py ./
 
-# 6. Exponemos el puerto 8000 que es donde escucha FastAPI
-EXPOSE 8000
+# El modelo se ENTRENA al construir la imagen (base de estudios, ~2-4 min).
+# Así siempre coincide con la versión de scikit-learn instalada.
+RUN python entrenar.py --simulados 1600 > /dev/null
 
-# 7. Comando para encender la API automáticamente cuando el servidor inicie
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Usuario sin privilegios (si alguien rompiera la API, no sería root)
+RUN useradd --create-home app && chown -R app /app
+USER app
+
+# Render indica el puerto en la variable PORT (por defecto 10000)
+EXPOSE 10000
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]

@@ -1,0 +1,175 @@
+{
+  "version": "2.0.0",
+  "entrenado": "2026-10-13T16:31:00",
+  "horizonte_horas": 48,
+  "datos": {
+    "pacientes_simulados": 200,
+    "filas_simuladas": 17888,
+    "pacientes_reales": 4,
+    "filas_reales": 103
+  },
+  "prueba_personas_nuevas": {
+    "modelo": {
+      "casos": 4969,
+      "tasa_real": 0.421,
+      "auc": 0.883,
+      "pr_auc": 0.824,
+      "brier": 0.1354
+    },
+    "referencia_solo_cuestionario": {
+      "casos": 4969,
+      "tasa_real": 0.421,
+      "auc": 0.81,
+      "pr_auc": 0.695,
+      "brier": 0.1895
+    },
+    "referencia_lineal": {
+      "casos": 4969,
+      "tasa_real": 0.421,
+      "auc": 0.867,
+      "pr_auc": 0.804,
+      "brier": 0.1464
+    },
+    "justo_despues_de_anotar_sintomas": {
+      "casos": 1514,
+      "tasa_real": 0.699,
+      "auc": 0.816,
+      "pr_auc": 0.882,
+      "brier": 0.1419
+    },
+    "calibracion": [
+      {
+        "rango": "0-10%",
+        "casos": 974,
+        "prob_media": 0.058,
+        "real": 0.04
+      },
+      {
+        "rango": "10-20%",
+        "casos": 946,
+        "prob_media": 0.143,
+        "real": 0.116
+      },
+      {
+        "rango": "20-30%",
+        "casos": 456,
+        "prob_media": 0.246,
+        "real": 0.243
+      },
+      {
+        "rango": "30-40%",
+        "casos": 321,
+        "prob_media": 0.351,
+        "real": 0.414
+      },
+      {
+        "rango": "40-50%",
+        "casos": 253,
+        "prob_media": 0.448,
+        "real": 0.399
+      },
+      {
+        "rango": "50-60%",
+        "casos": 297,
+        "prob_media": 0.549,
+        "real": 0.606
+      },
+      {
+        "rango": "60-70%",
+        "casos": 327,
+        "prob_media": 0.654,
+        "real": 0.688
+      },
+      {
+        "rango": "70-80%",
+        "casos": 437,
+        "prob_media": 0.753,
+        "real": 0.805
+      },
+      {
+        "rango": "80-90%",
+        "casos": 540,
+        "prob_media": 0.854,
+        "real": 0.859
+      },
+      {
+        "rango": "90-100%",
+        "casos": 418,
+        "prob_media": 0.924,
+        "real": 0.897
+      }
+    ],
+    "alertas": [
+      {
+        "umbral": 0.5,
+        "alertas": 2019,
+        "aciertos_%": 79.0,
+        "migranas_avisadas_%": 76.4
+      },
+      {
+        "umbral": 0.6,
+        "alertas": 1722,
+        "aciertos_%": 82.2,
+        "migranas_avisadas_%": 67.8
+      },
+      {
+        "umbral": 0.7,
+        "alertas": 1395,
+        "aciertos_%": 85.4,
+        "migranas_avisadas_%": 57.0
+      }
+    ]
+  },
+  "lo_que_mas_pesa": [
+    {
+      "caracteristica": "tasa_mensual_personal",
+      "importancia": 0.152
+    },
+    {
+      "caracteristica": "ciclo_relativo",
+      "importancia": 0.0239
+    },
+    {
+      "caracteristica": "horas_desde_ultimo_registro",
+      "importancia": 0.0223
+    },
+    {
+      "caracteristica": "intensidad_max_48h",
+      "importancia": 0.0102
+    },
+    {
+      "caracteristica": "dias_desde_ultimo_episodio",
+      "importancia": 0.0091
+    },
+    {
+      "caracteristica": "ataques_mes_perfil",
+      "importancia": 0.0056
+    },
+    {
+      "caracteristica": "sintomas_distintos_48h",
+      "importancia": 0.0055
+    },
+    {
+      "caracteristica": "episodios_total",
+      "importancia": 0.0028
+    },
+    {
+      "caracteristica": "intervalo_medio_dias",
+      "importancia": 0.0024
+    },
+    {
+      "caracteristica": "frac_desenc_estres",
+      "importancia": 0.0019
+    },
+    {
+      "caracteristica": "episodios_90d",
+      "importancia": 0.0011
+    },
+    {
+      "caracteristica": "registros_48h",
+      "importancia": 0.001
+    }
+  ],
+  "prueba_datos_reales": "Aún no hay suficientes datos reales (mínimo 5 personas y 200 momentos con 48 h de seguimiento).",
+  "segundos": 42.6
+}
