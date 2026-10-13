@@ -9,9 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY conocimiento.py caracteristicas.py simulador.py entrenar.py main.py ./
 
-# El modelo se ENTRENA al construir la imagen (base de estudios, ~2-4 min).
-# Así siempre coincide con la versión de scikit-learn instalada.
-RUN python entrenar.py --simulados 1600 > /dev/null
+# Modelo YA ENTRENADO (con `python entrenar.py`, mismas versiones de requirements.txt).
+# Entrenarlo aquí tardaba demasiado en el plan gratis de Render.
+COPY modelo_migrasense.joblib reporte_modelo.json ./
+RUN python -c "import joblib; p = joblib.load('modelo_migrasense.joblib'); print('Modelo OK', p['version'])"
 
 # Usuario sin privilegios (si alguien rompiera la API, no sería root)
 RUN useradd --create-home app && chown -R app /app

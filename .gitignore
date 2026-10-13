@@ -4,6 +4,5 @@ __pycache__/
 venv/
 .venv/
 .env
-*.joblib
 *.pkl
 salida_entrenamiento.txt
