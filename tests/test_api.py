@@ -88,3 +88,77 @@ def test_no_usa_el_futuro():
 def test_reentrenar_exige_clave():
     assert cliente.post("/reentrenar", json={"pacientes": []}).status_code == 401
     assert cliente.get("/reentrenar/estado").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Aprendizaje continuo: filtro de calidad y guardar/recuperar el modelo
+# ---------------------------------------------------------------------------
+import base64  # noqa: E402
+import copy  # noqa: E402
+import hashlib  # noqa: E402
+
+
+def _con_auc(paq, auc, version="2.0.0-rprueba", real=None):
+    p = dict(paq)
+    rep = copy.deepcopy(paq["reporte"])
+    rep["prueba_personas_nuevas"]["modelo"]["auc"] = auc
+    if real is not None:
+        rep["prueba_datos_reales"] = real
+    p["reporte"], p["version"] = rep, version
+    return p
+
+
+def test_filtro_calidad_acepta_igual_o_mejor_y_rechaza_peor():
+    actual = main._estado["paquete"]
+    base = main._auc(actual)
+    assert main.filtro_calidad(_con_auc(actual, base + 0.01), actual)[0] is True
+    assert main.filtro_calidad(_con_auc(actual, base - 0.005), actual)[0] is True     # variación normal
+    ok, motivo = main.filtro_calidad(_con_auc(actual, base - 0.05), actual)
+    assert ok is False and "peor" in motivo
+    assert main.filtro_calidad(_con_auc(actual, 0.70), None)[0] is False             # bajo el mínimo
+    malo_real = {"modelo_con_datos_reales": {"auc": 0.60}, "modelo_base_estudios": {"auc": 0.80}}
+    assert main.filtro_calidad(_con_auc(actual, base, real=malo_real), actual)[0] is False
+
+
+def test_descargar_y_cargar_el_modelo_ida_y_vuelta():
+    assert cliente.get("/modelo/descargar").status_code == 401                       # sin clave
+    r = cliente.get("/modelo/descargar", headers=CLAVE)
+    assert r.status_code == 200 and r.headers["X-Sha256"] == hashlib.sha256(r.content).hexdigest()
+    cuerpo = base64.b64encode(r.content)
+    ok = cliente.post("/modelo/cargar", content=cuerpo, headers={**CLAVE, "X-Sha256": r.headers["X-Sha256"]})
+    assert ok.status_code == 200 and ok.json()["version"] == r.headers["X-Modelo-Version"]
+
+
+def test_cargar_rechaza_archivos_danados_o_ajenos():
+    r = cliente.get("/modelo/descargar", headers=CLAVE)
+    danado = cliente.post("/modelo/cargar", content=base64.b64encode(r.content[:-10]),
+                          headers={**CLAVE, "X-Sha256": r.headers["X-Sha256"]})
+    assert danado.status_code == 422
+    import joblib, io  # noqa: E401
+    buf = io.BytesIO(); joblib.dump({"hola": 1}, buf); datos = buf.getvalue()
+    ajeno = cliente.post("/modelo/cargar", content=base64.b64encode(datos),
+                         headers={**CLAVE, "X-Sha256": hashlib.sha256(datos).hexdigest()})
+    assert ajeno.status_code == 422
+    assert cliente.post("/modelo/cargar", content=b"abc", headers={"X-Sha256": "x"}).status_code == 401
+
+
+def test_reentrenar_solo_activa_el_modelo_si_pasa_el_filtro(monkeypatch, tmp_path):
+    import entrenar
+    actual = main._estado["paquete"]
+    monkeypatch.setattr(main, "RUTA_MODELO", str(tmp_path / "m.joblib"))
+    monkeypatch.setattr(main, "RUTA_REPORTE", str(tmp_path / "r.json"))
+    lote = {"ahora": iso(AHORA), "simulados": 200, "pacientes": [paciente_frecuente_con_aviso()]}
+
+    monkeypatch.setattr(entrenar, "entrenar", lambda **k: _con_auc(actual, main._auc(actual) - 0.1, k["version"]))
+    main._reentrenar(lote)
+    est = cliente.get("/reentrenar/estado", headers=CLAVE).json()
+    assert est["estado"] == "terminado" and est["aceptado"] is False
+    assert main._estado["paquete"] is actual                                         # sigue el de antes
+
+    monkeypatch.setattr(entrenar, "entrenar", lambda **k: _con_auc(actual, main._auc(actual) + 0.01, k["version"]))
+    main._reentrenar(lote)
+    est = cliente.get("/reentrenar/estado", headers=CLAVE).json()
+    assert est["aceptado"] is True and est["pacientes_reales"] == 1
+    assert cliente.get("/salud").json()["version"] == est["version"]
+    assert cliente.get("/salud").json()["aprendido_con_usuarios"] is True
+    main._estado["paquete"] = actual                                                 # dejar como estaba

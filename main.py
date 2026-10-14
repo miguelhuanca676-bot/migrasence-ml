@@ -6,7 +6,15 @@ Endpoints:
   GET  /metricas            público  -> reporte completo de la evaluación (para la demo)
   POST /predecir            con clave -> probabilidad de migraña en las próximas 48 h + por qué
   POST /reentrenar          con clave -> reentrena en segundo plano con datos reales de la BD
-  GET  /reentrenar/estado   con clave -> cómo va el reentrenamiento
+  GET  /reentrenar/estado   con clave -> cómo va el reentrenamiento (y si el nuevo modelo se aceptó)
+  GET  /modelo/descargar    con clave -> el modelo activo (Laravel lo guarda en Aiven: no se pierde)
+  POST /modelo/cargar       con clave -> Laravel devuelve el modelo aprendido cuando Render reinicia
+
+Aprendizaje continuo (sin perder lo aprendido):
+  Render gratis borra el disco al reiniciar. Por eso el modelo aprendido se guarda en la
+  base de datos (tabla modelo_ml, a través de Laravel) y Laravel lo vuelve a cargar aquí si
+  nota que este servicio arrancó con el modelo original. Un modelo nuevo SOLO se activa si
+  pasa el filtro de calidad (no acierta peor que el anterior).
 
 Seguridad:
   - /predecir y /reentrenar exigen la cabecera X-API-Key = variable de entorno ML_API_KEY.
@@ -16,7 +24,10 @@ Seguridad:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
+import io
 import os
 import threading
 import time
@@ -25,13 +36,15 @@ from typing import Optional
 
 import joblib
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 import caracteristicas as C
 import conocimiento as K
 
 RUTA_MODELO = os.getenv("RUTA_MODELO", "modelo_migrasense.joblib")
+RUTA_REPORTE = os.getenv("RUTA_REPORTE", "reporte_modelo.json")
+MAX_MODELO_BYTES = 40 * 1024 * 1024
 MAX_EVENTOS = 5000
 
 app = FastAPI(title="MigraSense ML", version="2.0.0",
@@ -102,7 +115,7 @@ class Paciente(BaseModel):
 class LoteReal(BaseModel):
     ahora: Optional[str] = None
     pacientes: list[Paciente] = Field(default_factory=list, max_length=20000)
-    simulados: int = Field(800, ge=200, le=3000)
+    simulados: int = Field(200, ge=200, le=3000)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +218,7 @@ def salud():
     return {"ok": True, "modelo_cargado": True, "version": paq["version"], "entrenado": rep["entrenado"],
             "auc_personas_nuevas": rep["prueba_personas_nuevas"]["modelo"]["auc"],
             "pacientes_reales_usados": rep["datos"]["pacientes_reales"],
+            "aprendido_con_usuarios": "-r" in str(paq["version"]),   # False = modelo original de la imagen
             "reentrenamiento": _estado["reentreno"]["estado"]}
 
 
@@ -253,6 +267,40 @@ def predecir(datos: Paciente, x_api_key: Optional[str] = Header(None)):
     }
 
 
+TOLERANCIA_AUC = 0.01      # variación normal entre entrenamientos
+AUC_MINIMO = 0.75          # nunca se activa un modelo por debajo de esto
+
+
+def _auc(paq: dict | None) -> float | None:
+    try:
+        return float(paq["reporte"]["prueba_personas_nuevas"]["modelo"]["auc"])
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def filtro_calidad(nuevo: dict, actual: dict | None) -> tuple[bool, str]:
+    """¿Se puede activar el modelo nuevo? Solo si no acierta peor que el que está funcionando."""
+    auc_n, auc_a = _auc(nuevo), _auc(actual)
+    if auc_n is None:
+        return False, "El modelo nuevo no tiene evaluación"
+    if auc_n < AUC_MINIMO:
+        return False, f"AUC {auc_n:.3f} por debajo del mínimo {AUC_MINIMO}"
+    if auc_a is not None and auc_n < auc_a - TOLERANCIA_AUC:
+        return False, f"Acierta peor que el actual (AUC {auc_n:.3f} < {auc_a:.3f})"
+    real = nuevo["reporte"].get("prueba_datos_reales")
+    if isinstance(real, dict) and "modelo_con_datos_reales" in real:
+        con, base = real["modelo_con_datos_reales"]["auc"], real["modelo_base_estudios"]["auc"]
+        if con < base - 0.02:
+            return False, f"Con personas reales acierta peor que el modelo base (AUC {con:.3f} < {base:.3f})"
+    return True, (f"Aceptado: AUC {auc_n:.3f}" + (f" (antes {auc_a:.3f})" if auc_a is not None else ""))
+
+
+def _a_bytes(paq: dict) -> bytes:
+    buf = io.BytesIO()
+    joblib.dump(paq, buf, compress=3)
+    return buf.getvalue()
+
+
 def _reentrenar(lote: dict):
     import entrenar
     with _candado:
@@ -260,13 +308,21 @@ def _reentrenar(lote: dict):
         try:
             reales = [p for p in lote["pacientes"] if p.get("episodios") or p.get("registros")]
             ahora = C._ts(lote["ahora"]) if lote.get("ahora") else C._ts(_ahora_bolivia().isoformat())
-            paq = entrenar.entrenar(n_simulados=lote["simulados"], reales=reales, ahora_reales=ahora)
-            entrenar.guardar(paq, RUTA_MODELO)
-            _estado["paquete"] = paq
-            _estado["reentreno"] = {"estado": "terminado", "segundos": paq["reporte"]["segundos"],
-                                    "pacientes_reales": len(reales),
-                                    "auc_personas_nuevas": paq["reporte"]["prueba_personas_nuevas"]["modelo"]["auc"],
-                                    "prueba_datos_reales": paq["reporte"]["prueba_datos_reales"]}
+            version = f"{entrenar.VERSION}-r{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            paq = entrenar.entrenar(n_simulados=lote["simulados"], reales=reales, ahora_reales=ahora,
+                                    version=version, rapido=True)
+            actual = _estado["paquete"]
+            aceptado, motivo = filtro_calidad(paq, actual)
+            if aceptado:
+                entrenar.guardar(paq, RUTA_MODELO, RUTA_REPORTE)
+                _estado["paquete"] = paq
+            rep = paq["reporte"]
+            _estado["reentreno"] = {"estado": "terminado", "aceptado": aceptado, "motivo": motivo,
+                                    "version": version, "version_anterior": actual["version"] if actual else None,
+                                    "segundos": rep["segundos"], "pacientes_reales": len(reales),
+                                    "filas_reales": rep["datos"]["filas_reales"],
+                                    "auc_personas_nuevas": _auc(paq), "auc_anterior": _auc(actual),
+                                    "prueba_datos_reales": rep["prueba_datos_reales"]}
         except Exception as e:   # noqa: BLE001 - se informa en /reentrenar/estado
             _estado["reentreno"] = {"estado": "error", "detalle": str(e)[:300]}
 
@@ -285,3 +341,48 @@ def reentrenar(lote: LoteReal, tareas: BackgroundTasks, x_api_key: Optional[str]
 def estado_reentreno(x_api_key: Optional[str] = Header(None)):
     _verificar_clave(x_api_key)
     return _estado["reentreno"]
+
+
+# ---------------------------------------------------------------------------
+# Guardar / recuperar lo aprendido (Laravel lo guarda en la base de datos)
+# ---------------------------------------------------------------------------
+@app.get("/modelo/descargar")
+def modelo_descargar(x_api_key: Optional[str] = Header(None)):
+    _verificar_clave(x_api_key)
+    paq = _estado["paquete"]
+    if not paq:
+        raise HTTPException(503, "Modelo no cargado")
+    datos = _a_bytes(paq)
+    return Response(content=datos, media_type="application/octet-stream",
+                    headers={"X-Modelo-Version": paq["version"], "X-Sha256": hashlib.sha256(datos).hexdigest()})
+
+
+@app.post("/modelo/cargar")
+async def modelo_cargar(request: Request, x_api_key: Optional[str] = Header(None),
+                        x_sha256: Optional[str] = Header(None)):
+    """Recibe (en base64) un modelo que ESTE servicio entrenó antes y Laravel guardó en la BD."""
+    _verificar_clave(x_api_key)
+    cuerpo = await request.body()
+    if len(cuerpo) > MAX_MODELO_BYTES * 4 // 3 + 16:
+        raise HTTPException(413, "Modelo demasiado grande")
+    try:
+        datos = base64.b64decode(cuerpo, validate=True)
+    except ValueError:
+        raise HTTPException(422, "El modelo debe enviarse en base64")
+    if not x_sha256 or not hmac.compare_digest(hashlib.sha256(datos).hexdigest(), x_sha256.lower()):
+        raise HTTPException(422, "La huella (sha256) no coincide: archivo dañado")
+    try:
+        paq = joblib.load(io.BytesIO(datos))
+        ok = isinstance(paq, dict) and paq.get("columnas") == C.columnas() and hasattr(paq.get("modelo"), "predict_proba")
+    except Exception:   # noqa: BLE001
+        ok = False
+    if not ok:
+        raise HTTPException(422, "El archivo no es un modelo de MigraSense compatible")
+    with _candado:
+        _estado["paquete"] = paq
+        _estado["cargado"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            joblib.dump(paq, RUTA_MODELO, compress=3)
+        except OSError:
+            pass   # en memoria igual funciona
+    return {"ok": True, "version": paq["version"], "auc_personas_nuevas": _auc(paq)}

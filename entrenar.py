@@ -119,7 +119,10 @@ def nuevo_modelo():
 
 
 def entrenar(n_simulados: int = 1600, reales: list[dict] | None = None, semilla: int = 42,
-             ahora_reales: float | None = None) -> dict:
+             ahora_reales: float | None = None, version: str | None = None, rapido: bool = False) -> dict:
+    """rapido=True (reentrenamiento en Render): la importancia por permutación se calcula
+    con menos repeticiones/filas. El modelo y la evaluación son exactamente los mismos."""
+    version = version or VERSION
     t0 = time.time()
     rng = np.random.default_rng(semilla)
     sim = simulador.simular_poblacion(n_simulados, semilla)
@@ -151,7 +154,7 @@ def entrenar(n_simulados: int = 1600, reales: list[dict] | None = None, semilla:
 
     tras_aviso = (Xte["horas_desde_ultimo_registro"] <= 1).to_numpy()
     reporte = {
-        "version": VERSION,
+        "version": version,
         "entrenado": datetime.now().isoformat(timespec="seconds"),
         "horizonte_horas": H,
         "datos": {"pacientes_simulados": n_simulados, "filas_simuladas": int(len(X)),
@@ -167,8 +170,8 @@ def entrenar(n_simulados: int = 1600, reales: list[dict] | None = None, semilla:
     }
 
     # Qué mira más el modelo (importancia por permutación sobre una muestra)
-    m = rng.choice(len(Xte), size=min(6000, len(Xte)), replace=False)
-    imp = permutation_importance(modelo, Xte.iloc[m], yte[m], scoring="roc_auc", n_repeats=3, random_state=1)
+    m = rng.choice(len(Xte), size=min(1500 if rapido else 6000, len(Xte)), replace=False)
+    imp = permutation_importance(modelo, Xte.iloc[m], yte[m], scoring="roc_auc", n_repeats=1 if rapido else 3, random_state=1)
     orden = np.argsort(-imp.importances_mean)[:12]
     reporte["lo_que_mas_pesa"] = [{"caracteristica": Xte.columns[i], "importancia": round(float(imp.importances_mean[i]), 4)}
                                   for i in orden]
@@ -178,8 +181,13 @@ def entrenar(n_simulados: int = 1600, reales: list[dict] | None = None, semilla:
         sep_r = GroupShuffleSplit(n_splits=1, test_size=0.3, random_state=semilla)
         a, b = next(sep_r.split(Xr, yr, gr))
         solo_sim = nuevo_modelo().fit(X, y)
+        # Mismo modelo pero aprendiendo también de OTRAS personas reales (las de prueba no las ve)
+        con_reales = nuevo_modelo().fit(pd.concat([X, Xr.iloc[a]]), np.concatenate([y, yr[a]]),
+                                        sample_weight=np.concatenate([w, np.full(len(a), 3.0)]))
         reporte["prueba_datos_reales"] = {
+            "personas_de_prueba": int(len(set(gr[b]))),
             "modelo_base_estudios": metricas(yr[b], solo_sim.predict_proba(Xr.iloc[b])[:, 1]),
+            "modelo_con_datos_reales": metricas(yr[b], con_reales.predict_proba(Xr.iloc[b])[:, 1]),
             "referencia_solo_cuestionario": metricas(yr[b], prob_solo_cuestionario(Xr.iloc[b])),
         }
     else:
@@ -191,7 +199,7 @@ def entrenar(n_simulados: int = 1600, reales: list[dict] | None = None, semilla:
         Xall = pd.concat([X, Xr]); yall = np.concatenate([y, yr]); wall = np.concatenate([w, np.full(len(yr), 3.0)])
     final = nuevo_modelo().fit(Xall, yall, sample_weight=wall)
     reporte["segundos"] = round(time.time() - t0, 1)
-    return {"modelo": final, "columnas": C.columnas(), "version": VERSION, "reporte": reporte}
+    return {"modelo": final, "columnas": C.columnas(), "version": version, "reporte": reporte}
 
 
 def guardar(paquete: dict, ruta: str = "modelo_migrasense.joblib", ruta_reporte: str = "reporte_modelo.json"):
